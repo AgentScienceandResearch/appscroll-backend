@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
+const WebScout = require('./webscout');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,6 +16,43 @@ app.use(express.json());
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// =========================================================
+// WEBSCOUT CANDIDATES ENDPOINT
+// =========================================================
+// Returns licensed image candidates + link candidates
+// Only from allowlisted sources with verified licenses
+
+app.get('/api/candidates', async (req, res) => {
+  try {
+    const surfaces = req.query.surfaces?.split(',') || ['all'];
+    const limit = Math.min(parseInt(req.query.limit) || 5, 20);
+    
+    console.log(`🔍 WebScout: Fetching candidates for surfaces: ${surfaces.join(', ')}, limit: ${limit}`);
+    
+    const candidates = await WebScout.harvestCandidates(surfaces, limit);
+    
+    console.log(`✅ WebScout: Found ${candidates.img.length} image candidates, ${candidates.lnk.length} link candidates`);
+    
+    res.json({
+      v: 1,
+      t: 'candidates',
+      img: candidates.img,
+      lnk: candidates.lnk,
+      licenses: {
+        render_allowed: WebScout.RENDER_ALLOWED_LICENSES,
+        attribution_required: WebScout.ATTRIBUTION_REQUIRED
+      },
+      ts: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('WebScout error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch candidates',
+      message: error.message
+    });
+  }
 });
 
 // Generate AI Insight
@@ -262,7 +300,7 @@ OUTPUT FORMAT (JSON only):
       "k": "CLASS_KEY",
       "ttl": "TITLE",
       "sub": "subline",
-      "img": {"id": "from packet.c.img", "u": "url", "cap": "1-line image description", "src": "IMAGE SOURCE"} or null,
+      "img": {"id": "from packet.c.img", "u": "url", "cap": "1-line image description", "src": "IMAGE SOURCE", "lic": "LICENSE_CODE", "att": "attribution if required"} or null,
       "st": [{"l": "LABEL", "v": "VALUE", "d": "up|dn|flat", "n": "optional note"}],
       "qt": "QUOTE TEXT",
       "by": "SignalEngine",
@@ -272,6 +310,12 @@ OUTPUT FORMAT (JSON only):
     { ... second card with different k ... }
   ]
 }
+
+IMAGE LICENSE RULES:
+- ONLY use images from packet.c.img that have a safe license (PD, CC0, CCBY, CCBYSA, NASA_PD)
+- If img.lic is "UNKNOWN" or "NOT_ALLOWED", set img to null instead
+- Copy the "lic" and "att" fields from the source candidate to the CardSpec
+- The "att" field must be shown to users for CCBY, CCBYSA, and NASA_PD licensed images
 
 IMAGE CAPTION RULES:
 - cap: Write a compelling 1-line description (under 80 chars) that adds context to the image
@@ -453,6 +497,20 @@ function generateCardSpecForClass(cardClass, packet) {
   
   const img = packet.c?.img?.[0] || null;
   
+  // Helper to create image ref with license info
+  const makeImageRef = (imgCandidate) => {
+    if (!imgCandidate) return null;
+    return {
+      id: imgCandidate.id,
+      u: imgCandidate.u,
+      cap: imgCandidate.ttl || null,
+      src: imgCandidate.src || null,
+      lic: imgCandidate.lic || null,
+      att: imgCandidate.att || null,
+      link: imgCandidate.link || null
+    };
+  };
+  
   switch (cardClass) {
     case 'flow_next':
       return {
@@ -479,7 +537,7 @@ function generateCardSpecForClass(cardClass, packet) {
         k: 'calm_reset',
         ttl: 'MOMENT OF CALM',
         sub: 'A pause in the signal stream',
-        img: img ? { id: img.id, u: img.u } : null,
+        img: makeImageRef(img),
         st: [],
         qt: 'BREATHE. THE WORLD KEEPS TURNING.',
         by: 'SignalEngine',
@@ -516,7 +574,7 @@ function generateCardSpecForClass(cardClass, packet) {
         k: 'culture_lens',
         ttl: 'DEEPER SIGNAL',
         sub: 'A moment of perspective',
-        img: artImg ? { id: artImg.id, u: artImg.u } : null,
+        img: makeImageRef(artImg),
         st: [],
         qt: 'PERSPECTIVE SHIFTS. MEANING EMERGES.',
         by: 'SignalEngine',
@@ -544,7 +602,7 @@ function generateCardSpecForClass(cardClass, packet) {
         k: 'sig_sum',
         ttl: "TODAY'S SIGNALS",
         sub: `${dateStr} · ${timeStr} · ${(packet.m || 'sync').charAt(0).toUpperCase() + (packet.m || 'sync').slice(1)}`,
-        img: img ? { id: img.id, u: img.u } : null,
+        img: makeImageRef(img),
         st: stats,
         qt: 'SIGNALS NOTED. CARRY ON.',
         by: 'SignalEngine',
@@ -580,6 +638,7 @@ function generateFallbackCardSpec(packet) {
 app.listen(PORT, () => {
   console.log(`🚀 AppScroll backend running on port ${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
+  console.log(`🔍 WebScout Candidates: GET http://localhost:${PORT}/api/candidates`);
   console.log(`🧠 Insight API: POST http://localhost:${PORT}/api/insight`);
   console.log(`🎴 Artifact Card API: POST http://localhost:${PORT}/api/artifact-card`);
   console.log(`🎯 Competing Cards API: POST http://localhost:${PORT}/api/competing-cards`);
