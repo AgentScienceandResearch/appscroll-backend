@@ -370,9 +370,13 @@ async function fetchUnsplash(limit = 5, query = 'nature') {
     const photos = await response.json();
     
     for (const photo of photos) {
+      // Skip if no valid URL
+      const imageUrl = photo.urls?.regular || photo.urls?.small;
+      if (!imageUrl) continue;
+      
       candidates.push({
         id: `unsplash:${photo.id}`,
-        u: photo.urls?.regular || photo.urls?.small,
+        u: imageUrl,
         k: 'photo',
         ttl: truncate(photo.description || photo.alt_description || 'Unsplash Photo', 50),
         desc: truncate(`Photo by ${photo.user?.name || 'Unknown'}`, 60),
@@ -614,6 +618,12 @@ async function harvestCandidates(surfaces = ['space', 'art', 'culture', 'tech'],
       for (const candidate of result.value) {
         // Filter out unsafe content
         if (!candidate.safe) continue;
+        
+        // VALIDATE required fields - skip malformed candidates
+        if (!candidate.id || !candidate.u || !candidate.k || !candidate.ttl || !candidate.src || !candidate.lic) {
+          console.warn('Skipping malformed candidate:', candidate.id || 'unknown');
+          continue;
+        }
         
         // Separate image candidates from link candidates
         if (candidate.k === 'link' || !RENDER_ALLOWED_LICENSES.includes(candidate.lic)) {
